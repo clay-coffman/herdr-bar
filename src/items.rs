@@ -218,6 +218,18 @@ fn name_key(text: &str) -> String {
     normalize(without_jump_key(text))
 }
 
+/// The words of a name key, so "ehr" is found in "ehr · coordinator" but
+/// "pi" is not found in "herdr-picker".
+fn name_words(key: &str) -> Vec<&str> {
+    key.split(|c: char| c.is_whitespace() || c == '·' || c == '›').filter(|w| !w.is_empty()).collect()
+}
+
+/// Whether every word of one name is a word of the other.
+fn names_overlap(a: &str, b: &str) -> bool {
+    let (a, b) = (name_words(a), name_words(b));
+    !a.is_empty() && !b.is_empty() && (a.iter().all(|w| b.contains(w)) || b.iter().all(|w| a.contains(w)))
+}
+
 /// The row title for a tab: its label, followed by its workspace when the
 /// mode asks for it ("always", or "auto" for a name that `shared` lists as
 /// appearing in more than one workspace). A label that already names the
@@ -231,8 +243,7 @@ fn with_workspace(label: &str, workspace_label: &str, mode: &str, shared: &[Stri
     if !wanted || label_n.is_empty() {
         return label.to_string();
     }
-    let workspace_n = name_key(workspace_label);
-    if label_n.contains(&workspace_n) || workspace_n.contains(&label_n) {
+    if names_overlap(&label_n, &name_key(workspace_label)) {
         return label.to_string();
     }
     format!("{} · {}", label, workspace_label)
@@ -815,20 +826,28 @@ mod tests {
             r#"{"workspaces": [{"workspace_id": "w1", "label": "[1] Launcher fold-in · LUM-2523"},
                                {"workspace_id": "w2", "label": "[2] Console polish · LUM-2525"},
                                {"workspace_id": "w3", "label": "[3] EHR · Coordinator"},
-                               {"workspace_id": "w4", "label": "Tools"}],
+                               {"workspace_id": "w4", "label": "Tools"},
+                               {"workspace_id": "w5", "label": "[5] herdr-picker"},
+                               {"workspace_id": "w6", "label": "[6] crabox"}],
                 "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "[1] lead"},
                          {"tab_id": "w2:t1", "workspace_id": "w2", "label": "[2] lead"},
                          {"tab_id": "w2:t2", "workspace_id": "w2", "label": "[1] workers 1"},
                          {"tab_id": "w3:t1", "workspace_id": "w3", "label": "[1] ehr"},
-                         {"tab_id": "w4:t1", "workspace_id": "w4", "label": "Tools"}],
+                         {"tab_id": "w4:t1", "workspace_id": "w4", "label": "Tools"},
+                         {"tab_id": "w5:t1", "workspace_id": "w5", "label": "[1] pi"},
+                         {"tab_id": "w6:t1", "workspace_id": "w6", "label": "[1] pi"}],
                 "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "label": "agent", "cwd": "/wt/lum-2523"},
                           {"pane_id": "w2:p1", "tab_id": "w2:t1", "label": "agent", "cwd": "/wt/lum-2525"},
                           {"pane_id": "w2:p2", "tab_id": "w2:t2", "cwd": "/wt/lum-2525"},
                           {"pane_id": "w3:p1", "tab_id": "w3:t1", "cwd": "/repos/ehr"},
-                          {"pane_id": "w4:p1", "tab_id": "w4:t1", "cwd": "/repos/tools"}],
+                          {"pane_id": "w4:p1", "tab_id": "w4:t1", "cwd": "/repos/tools"},
+                          {"pane_id": "w5:p1", "tab_id": "w5:t1", "cwd": "/repos/herdr-picker"},
+                          {"pane_id": "w6:p1", "tab_id": "w6:t1", "cwd": "/repos/crabox"}],
                 "agents": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "agent": "pi"},
                            {"pane_id": "w2:p1", "tab_id": "w2:t1", "agent": "pi"},
-                           {"pane_id": "w3:p1", "tab_id": "w3:t1", "agent": "pi"}]}"#,
+                           {"pane_id": "w3:p1", "tab_id": "w3:t1", "agent": "pi"},
+                           {"pane_id": "w5:p1", "tab_id": "w5:t1", "agent": "pi"},
+                           {"pane_id": "w6:p1", "tab_id": "w6:t1", "agent": "pi"}]}"#,
         )
         .unwrap();
         let title = |mode: &str, id: &str| -> String {
@@ -847,6 +866,9 @@ mod tests {
         assert_eq!(title("auto", "w2:p1"), "[2] lead · [2] Console polish · LUM-2525");
         assert_eq!(title("auto", "w2:t2"), "[1] workers 1");
         assert_eq!(title("auto", "w3:p1"), "[1] ehr");
+        // Names are compared as whole words: "pi" is not found in "herdr-picker".
+        assert_eq!(title("auto", "w5:p1"), "[1] pi · [5] herdr-picker");
+        assert_eq!(title("auto", "w6:p1"), "[1] pi · [6] crabox");
         // always: every row, except where the tab already names its workspace
         // (jump keys aside: "[1] ehr" is found in "[3] EHR · Coordinator").
         assert_eq!(title("always", "w2:t2"), "[1] workers 1 · [2] Console polish · LUM-2525");
