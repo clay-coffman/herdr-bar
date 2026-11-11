@@ -331,7 +331,11 @@ still offers you the place you came from first next time.
 **What a row says.** The tab's own name comes first — that is what you named
 the work and what you remember it by — and an agent's current summary follows it
 in dimmer text. A narrow row keeps the name and drops the summary; a tab with no
-name of its own lets the summary stand in for it. Folder and workspace metadata
+name of its own lets the summary stand in for it. When tabs are named for
+roles rather than tasks (every lead's tab called `lead`, say), set
+`"workspace_in_title": "auto"` and a tab name that several workspaces share is
+followed by its workspace in the title, so the rows read apart;
+`"always"` does it for every tab and agent row. Folder and workspace metadata
 is omitted when the same name is already present in the title or summary, and
 agent labels use distinct colors so mixed-agent sessions scan quickly.
 
@@ -397,6 +401,7 @@ Optional. Write `config.json` in the plugin config directory
 | `running_time` | `true` | per-row running time (`47s`, `2h04m`); `false` hides it and skips the per-pane `process_info`/`ps` reading, so the bar opens faster |
 | `scope` | `"all"` | the filter the bar opens with: `"agent"` (`@ agents`), `"pane"` (`% panes`), `"tab"` (`$ shells`), `"blocked"` (`! needs you`), `"action"` (`> actions`, with `"actions": true`) or `"all"`; `backspace` on an empty query still clears it, and `ctrl+u` returns to it |
 | `select_current` | `false` | `true` opens with the row you are in selected instead of the one you came from; the order stays the same, so that row follows the recently visited ones |
+| `workspace_in_title` | `"never"` | `"auto"` follows a tab name that appears in more than one workspace with its workspace in the row title (`[1] lead · Connect launcher · LUM-2523`); `"always"` does it for every tab and agent row. A title that already names its workspace is left alone, and the right-hand column drops its copy of the label |
 | `actions` | `false` | `true` lists plugin actions as rows that run on Enter; `>` filters to them. The list is read once per open |
 | `colors` | `{}` | role → `#rrggbb`, an ANSI name (`bright_blue`), or 0-255. Roles: `accent`, `match`, `text`, `muted`, `blocked`, `working`, `done`, `idle`, `unknown`, plus `agent_claude`, `agent_codex`, `agent_pi`, `agent_grok`, `agent_kimi`, `agent_gemini`, `agent_cursor`, `agent_opencode` |
 

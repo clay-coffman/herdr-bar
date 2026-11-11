@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::fuzzy::{match_prepared, split_query, Match, Term};
 use crate::fxhash::FxHashMap;
 use crate::icons;
-use crate::items::{build_action_items, build_items, build_pane_items, Item, KIND_ACTION, KIND_AGENT, KIND_PANE, KIND_SPACE, KIND_TAB, PLATFORM};
+use crate::items::{build_action_items, build_items_with, build_pane_items, Item, KIND_ACTION, KIND_AGENT, KIND_PANE, KIND_SPACE, KIND_TAB, PLATFORM};
 use crate::keys::{Event, KeyDecoder, MouseKind};
 use crate::mru::Recents;
 use crate::paint::Painter;
@@ -161,7 +161,7 @@ impl Pool {
             Value::Str(text) => pystr::len(text),
             _ => 0,
         };
-        let mut items = build_items(snapshot);
+        let mut items = build_items_with(snapshot, config.workspace_in_title);
         if !config.wants_workspaces(workspace_count) {
             items.retain(|item| item.kind != KIND_SPACE);
         }

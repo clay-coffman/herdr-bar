@@ -6,6 +6,7 @@
 //! (`preview is True`), so a config means exactly what it used to.
 
 use crate::app::SCOPES;
+use crate::items::WORKSPACE_IN_TITLE_MODES;
 use crate::pyjson::{self, Map, Value};
 use crate::pystr;
 use std::path::PathBuf;
@@ -34,6 +35,9 @@ pub struct Config {
     pub follow_new_sessions: bool,
     /// List plugin actions as rows the bar can run.
     pub actions: bool,
+    /// Follow a tab name with its workspace in the row title: "never",
+    /// "auto" (only a name that several workspaces share) or "always".
+    pub workspace_in_title: &'static str,
 }
 
 /// Python's `int(value)` for whatever JSON put there; None where it raises.
@@ -107,6 +111,10 @@ impl Config {
             select_current: get("select_current").map(|v| v.is_true()).unwrap_or(false),
             follow_new_sessions: get("follow_new_sessions").map(|v| v.is_true()).unwrap_or(false),
             actions,
+            workspace_in_title: get("workspace_in_title")
+                .and_then(|v| v.as_str())
+                .and_then(|name| WORKSPACE_IN_TITLE_MODES.iter().copied().find(|mode| *mode == name))
+                .unwrap_or("never"),
         }
     }
 
@@ -199,6 +207,17 @@ mod tests {
         assert!(with("follow_new_sessions", "true").follow_new_sessions);
         for value in ["false", "\"true\"", "1", "null"] {
             assert!(!with("follow_new_sessions", value).follow_new_sessions, "follow_new_sessions = {}", value);
+        }
+    }
+
+    #[test]
+    fn workspace_in_title_takes_its_three_modes_and_falls_back_to_never() {
+        assert_eq!(Config::default().workspace_in_title, "never");
+        for mode in WORKSPACE_IN_TITLE_MODES {
+            assert_eq!(with("workspace_in_title", &format!("\"{}\"", mode)).workspace_in_title, mode);
+        }
+        for value in ["\"Auto\"", "\"on\"", "\"\"", "true", "1", "null", "[\"auto\"]"] {
+            assert_eq!(with("workspace_in_title", value).workspace_in_title, "never", "workspace_in_title = {}", value);
         }
     }
 

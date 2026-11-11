@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add `workspace_in_title` (default `"never"`). With `"auto"`, a tab name that
+  appears in more than one workspace is followed by its workspace in the row
+  title (`[1] lead · Connect launcher · LUM-2523`), so a fleet whose tabs are
+  named for roles rather than tasks reads apart; `"always"` does it for every
+  tab and agent row. A title that already names its workspace is left alone,
+  the right-hand column drops its copy of the label, and a summary that only
+  repeats the bare tab name stays hidden.
 - Add GitHub Copilot CLI as an `auto_titles` source (#30). Copilot sets its
   terminal title to `<session title> - GitHub Copilot`, so the title is read
   from the snapshot Herdr already reports, with the suffix removed, and no

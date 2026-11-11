@@ -140,7 +140,8 @@ fn optional(value: &Option<String>) -> Value {
 
 fn list(client: &mut HerdrClient) -> crate::client::Result<i32> {
     let snapshot = client.snapshot()?;
-    let payload: Vec<Value> = build_items(&snapshot)
+    let config = Config::load();
+    let payload: Vec<Value> = crate::items::build_items_with(&snapshot, config.workspace_in_title)
         .iter()
         .map(|item| {
             let mut map = Map::new();

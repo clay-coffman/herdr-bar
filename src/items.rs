@@ -193,6 +193,51 @@ fn first_str(values: &[&str]) -> String {
 }
 
 /// The tab's name without the status prefix the watcher puts on agent tabs.
+/// Values of the `workspace_in_title` config key.
+pub const WORKSPACE_IN_TITLE_MODES: [&str; 3] = ["never", "auto", "always"];
+
+/// `text` without a leading `[N] ` jump key, the prefix herdr-automatic-rename
+/// gives tab and workspace names, so "[1] lead" and "[2] lead" are one name
+/// and "[1] ehr" is found in "[3] EHR · Coordinator".
+fn without_jump_key(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    let Some(rest) = trimmed.strip_prefix('[') else { return text };
+    let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 {
+        return text;
+    }
+    match rest[digits..].strip_prefix(']') {
+        Some(after) => after.trim_start(),
+        None => text,
+    }
+}
+
+/// A tab or workspace name as compared across rows: case, spacing and the
+/// jump key set aside.
+fn name_key(text: &str) -> String {
+    normalize(without_jump_key(text))
+}
+
+/// The row title for a tab: its label, followed by its workspace when the
+/// mode asks for it ("always", or "auto" for a name that `shared` lists as
+/// appearing in more than one workspace). A label that already names the
+/// workspace, or is named by it, is left alone so nothing reads twice.
+fn with_workspace(label: &str, workspace_label: &str, mode: &str, shared: &[String]) -> String {
+    if label.is_empty() || workspace_label.is_empty() {
+        return label.to_string();
+    }
+    let label_n = name_key(label);
+    let wanted = mode == "always" || (mode == "auto" && shared.contains(&label_n));
+    if !wanted || label_n.is_empty() {
+        return label.to_string();
+    }
+    let workspace_n = name_key(workspace_label);
+    if label_n.contains(&workspace_n) || workspace_n.contains(&label_n) {
+        return label.to_string();
+    }
+    format!("{} · {}", label, workspace_label)
+}
+
 fn tab_label(tab: &Value, has_agents: bool) -> String {
     let label = clean(tab.get("label"));
     if has_agents {
@@ -346,6 +391,13 @@ fn or_empty(value: &Value) -> String {
 static EMPTY: Value = Value::Null;
 
 pub fn build_items(snapshot: &Value) -> Vec<Item> {
+    build_items_with(snapshot, "never")
+}
+
+/// `build_items` with the config's `workspace_in_title` mode: "never", "auto"
+/// (a tab name that several workspaces share is followed by its workspace in
+/// the row title, so the rows read apart) or "always".
+pub fn build_items_with(snapshot: &Value, workspace_in_title: &str) -> Vec<Item> {
     let workspaces = snapshot.get("workspaces").list_or_empty();
     let tabs = snapshot.get("tabs").list_or_empty();
     let panes = snapshot.get("panes").list_or_empty();
@@ -380,6 +432,32 @@ pub fn build_items(snapshot: &Value) -> Vec<Item> {
         }
     }
 
+    // The tab names that appear in more than one workspace (every lead tab
+    // called "lead", say), compared as the rows would show them; only the
+    // "auto" mode needs them.
+    let shared: Vec<String> = if workspace_in_title == "auto" {
+        let mut workspaces_by_label: FxHashMap<String, Vec<String>> = FxHashMap::default();
+        for tab in tabs {
+            let tab_id = tab.get("tab_id");
+            if !tab_id.truthy() {
+                continue;
+            }
+            let has_agents = agents_by_tab.get(tab_id).is_some_and(|agents| !agents.is_empty());
+            let label = name_key(&tab_label(tab, has_agents));
+            if label.is_empty() {
+                continue;
+            }
+            let workspace = or_empty(tab.get("workspace_id"));
+            let seen = workspaces_by_label.entry(label).or_default();
+            if !seen.contains(&workspace) {
+                seen.push(workspace);
+            }
+        }
+        workspaces_by_label.into_iter().filter(|(_, w)| w.len() > 1).map(|(label, _)| label).collect()
+    } else {
+        Vec::new()
+    };
+
     // Each tab makes its rows from read-only lookups, so a big session
     // builds them in parallel chunks (see `par`), joined back in order.
     let mut items = crate::par::map_chunks(tabs, |tabs| {
@@ -395,7 +473,8 @@ pub fn build_items(snapshot: &Value) -> Vec<Item> {
             let workspace_label = labels.get(&workspace_key).cloned().unwrap_or_default();
             let tab_number = tab_number_of(tab);
             let tab_agents: Vec<&Value> = agents_by_tab.get(tab_id).cloned().unwrap_or_default();
-            let label = tab_label(tab, !tab_agents.is_empty());
+            let plain_label = tab_label(tab, !tab_agents.is_empty());
+            let label = with_workspace(&plain_label, &workspace_label, workspace_in_title, &shared);
 
             if tab_agents.is_empty() {
                 let pane = first_pane_by_tab.get(tab_id).copied();
@@ -447,8 +526,17 @@ pub fn build_items(snapshot: &Value) -> Vec<Item> {
                     pane.get("terminal_title_stripped"),
                 ]);
                 let title = first_str(&[&label, &summary, pyos::basename(&cwd), "agent"]);
-                let detail =
-                    if summary_repeats_title(&summary, &title, &cwd, &workspace_label) { String::new() } else { summary };
+                // The summary is judged against the bare tab name too, so a
+                // workspace joined to the title does not bring back a summary
+                // that only repeats the name.
+                let plain_title = first_str(&[&plain_label, &summary, pyos::basename(&cwd), "agent"]);
+                let detail = if summary_repeats_title(&summary, &title, &cwd, &workspace_label)
+                    || summary_repeats_title(&summary, &plain_title, &cwd, &workspace_label)
+                {
+                    String::new()
+                } else {
+                    summary
+                };
                 let agent_kind = first(&[agent.get("display_agent"), agent.get("agent")]);
                 let agent_name = first(&[agent.get("name")]);
                 let key = id_of(pane_id).unwrap_or_else(|| pyjson::py_str(tab_id));
@@ -719,6 +807,55 @@ mod tests {
         let agent = pane(&items(), "w1:p4");
         assert_eq!(agent.title, "cards meaningless");
         assert_eq!(agent.detail, "");
+    }
+
+    #[test]
+    fn workspace_joins_the_title_when_tab_names_repeat_across_workspaces() {
+        let snapshot = pyjson::loads(
+            r#"{"workspaces": [{"workspace_id": "w1", "label": "[1] Launcher fold-in · LUM-2523"},
+                               {"workspace_id": "w2", "label": "[2] Console polish · LUM-2525"},
+                               {"workspace_id": "w3", "label": "[3] EHR · Coordinator"},
+                               {"workspace_id": "w4", "label": "Tools"}],
+                "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "[1] lead"},
+                         {"tab_id": "w2:t1", "workspace_id": "w2", "label": "[2] lead"},
+                         {"tab_id": "w2:t2", "workspace_id": "w2", "label": "[1] workers 1"},
+                         {"tab_id": "w3:t1", "workspace_id": "w3", "label": "[1] ehr"},
+                         {"tab_id": "w4:t1", "workspace_id": "w4", "label": "Tools"}],
+                "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "label": "agent", "cwd": "/wt/lum-2523"},
+                          {"pane_id": "w2:p1", "tab_id": "w2:t1", "label": "agent", "cwd": "/wt/lum-2525"},
+                          {"pane_id": "w2:p2", "tab_id": "w2:t2", "cwd": "/wt/lum-2525"},
+                          {"pane_id": "w3:p1", "tab_id": "w3:t1", "cwd": "/repos/ehr"},
+                          {"pane_id": "w4:p1", "tab_id": "w4:t1", "cwd": "/repos/tools"}],
+                "agents": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "agent": "pi"},
+                           {"pane_id": "w2:p1", "tab_id": "w2:t1", "agent": "pi"},
+                           {"pane_id": "w3:p1", "tab_id": "w3:t1", "agent": "pi"}]}"#,
+        )
+        .unwrap();
+        let title = |mode: &str, id: &str| -> String {
+            build_items_with(&snapshot, mode)
+                .into_iter()
+                .find(|i| i.kind != KIND_SPACE && (i.pane_id.as_deref() == Some(id) || i.tab_id.as_deref() == Some(id)))
+                .unwrap()
+                .title
+        };
+        // The default leaves every title as the tab name.
+        assert_eq!(title("never", "w1:p1"), "[1] lead");
+        assert_eq!(build_items(&snapshot).into_iter().find(|i| i.pane_id.as_deref() == Some("w2:p1")).unwrap().title, "[2] lead");
+        // auto: the two "lead" tabs read apart, whatever their tab numbers;
+        // names unique to one workspace do not change.
+        assert_eq!(title("auto", "w1:p1"), "[1] lead · [1] Launcher fold-in · LUM-2523");
+        assert_eq!(title("auto", "w2:p1"), "[2] lead · [2] Console polish · LUM-2525");
+        assert_eq!(title("auto", "w2:t2"), "[1] workers 1");
+        assert_eq!(title("auto", "w3:p1"), "[1] ehr");
+        // always: every row, except where the tab already names its workspace
+        // (jump keys aside: "[1] ehr" is found in "[3] EHR · Coordinator").
+        assert_eq!(title("always", "w2:t2"), "[1] workers 1 · [2] Console polish · LUM-2525");
+        assert_eq!(title("always", "w3:p1"), "[1] ehr");
+        assert_eq!(title("always", "w4:t1"), "Tools");
+        // The pane label still trails as the summary, and the workspace is searchable once.
+        let lead = build_items_with(&snapshot, "auto").into_iter().find(|i| i.pane_id.as_deref() == Some("w1:p1")).unwrap();
+        assert_eq!(lead.detail, "agent");
+        assert_eq!(lead.fields.iter().filter(|f| f.contains("LUM-2523")).count(), 2, "{:?}", lead.fields);
     }
 
     #[test]
