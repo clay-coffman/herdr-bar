@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add `attention` (default `["blocked", "done"]`) and `pin_attention`
+  (default `false`). `attention` names the statuses that need you, for the
+  `! needs you` filter and for the pin; `["blocked"]` keeps finished
+  workers that report to their lead out of it. With `pin_attention`, those
+  rows sit above the recently visited ones when the bar opens with no query,
+  blocked first and then by recency, and win a query tie over recency; the
+  row you are in still follows them, never first. Space rows are never pinned.
 - Add `workspace_in_title` (default `"never"`). With `"auto"`, a tab name that
   appears in more than one workspace is followed by its workspace in the row
   title (`[1] lead · Connect launcher · LUM-2523`), so a fleet whose tabs are

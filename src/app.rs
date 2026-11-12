@@ -141,7 +141,7 @@ pub enum Outcome {
 
 /// How a match ranks: score, then places before actions, recency, status,
 /// and shorter titles first.
-type SortKey = (i64, bool, usize, i64, usize);
+type SortKey = (i64, bool, bool, usize, i64, usize);
 
 /// The rows one snapshot makes, before the bar takes them in.
 pub struct Pool {
@@ -361,7 +361,7 @@ impl Bar {
             "agent" => item.kind == KIND_AGENT,
             "pane" => item.kind == KIND_PANE,
             "tab" => item.kind == KIND_TAB,
-            "blocked" => item.status == "blocked" || item.status == "done",
+            "blocked" => self.needs_you(item),
             "action" => item.kind == KIND_ACTION,
             _ => true,
         }
@@ -385,6 +385,7 @@ impl Bar {
         }
         let terms: Vec<Term> = terms.iter().map(|t| Term::new(t)).collect();
         let (pool, recents) = (&self.pool, &self.recents);
+        let (pin, attention) = (self.config.pin_attention, &self.config.attention);
         // Rows score independently, so a big list is scored in chunks (see
         // `par`); each chunk keeps its own memo, which only saves work.
         let mut scored: Vec<(SortKey, Row)> = crate::par::map_chunks(&candidates, |chunk| {
@@ -396,8 +397,11 @@ impl Bar {
                 let rank = recents.rank(&item.key, &item.title).unwrap_or(999);
                 let positions = by_field.get(&0).cloned().unwrap_or_default();
                 // On a tie the place beats the action: Enter should go somewhere.
+                // With `pin_attention`, a row that needs you then beats one that
+                // does not, before recency decides.
+                let pinned = pin && item.kind != KIND_SPACE && attention.contains(&item.status.as_str());
                 scored.push((
-                    (-score, item.kind == KIND_ACTION, rank, item.status_rank(), char_len(&item.title)),
+                    (-score, item.kind == KIND_ACTION, !pinned, rank, item.status_rank(), char_len(&item.title)),
                     Row { item: index, positions, field_positions: by_field },
                 ));
             }
@@ -411,7 +415,21 @@ impl Bar {
         order.into_iter().filter_map(|at| rows[at].take()).collect()
     }
 
+    /// Whether a row's status is one the `attention` setting says needs you.
+    fn needs_you(&self, item: &Item) -> bool {
+        self.config.attention.contains(&item.status.as_str())
+    }
+
+    /// Rows of one status in session order: by workspace, then tab, then name.
+    fn place_order(a: &Item, b: &Item) -> std::cmp::Ordering {
+        a.workspace_label
+            .cmp(&b.workspace_label)
+            .then_with(|| a.tab_number.unwrap_or(1 << 30).cmp(&b.tab_number.unwrap_or(1 << 30)))
+            .then_with(|| a.title.cmp(&b.title))
+    }
+
     fn resting_order(&self, items: &[usize]) -> Vec<usize> {
+        let mut pinned: Vec<(i64, usize, usize)> = Vec::new();
         let mut recent: Vec<(usize, usize)> = Vec::new();
         let mut rest: Vec<usize> = Vec::new();
         let mut current: Option<usize> = None;
@@ -421,11 +439,22 @@ impl Bar {
                 current = Some(index);
                 continue;
             }
-            match self.recents.rank(&item.key, &item.title) {
+            let rank = self.recents.rank(&item.key, &item.title);
+            // With `pin_attention`, the rows that need you come before the
+            // recents: the most urgent status first, the most recently visited
+            // within it. A space row stands for its agents and stays put.
+            if self.config.pin_attention && item.kind != KIND_SPACE && item.kind != KIND_ACTION && self.needs_you(item) {
+                pinned.push((item.status_rank(), rank.unwrap_or(usize::MAX), index));
+                continue;
+            }
+            match rank {
                 None => rest.push(index),
                 Some(rank) => recent.push((rank, index)),
             }
         }
+        pinned.sort_by(|a, b| {
+            (a.0, a.1).cmp(&(b.0, b.1)).then_with(|| Bar::place_order(&self.pool[a.2], &self.pool[b.2]))
+        });
         recent.sort_by_key(|entry| entry.0);
         rest.sort_by(|&a, &b| {
             let (a, b) = (&self.pool[a], &self.pool[b]);
@@ -435,20 +464,18 @@ impl Bar {
                     // Last, in Herdr's order, which keeps each plugin's together.
                     return std::cmp::Ordering::Equal;
                 }
-                a.workspace_label
-                    .cmp(&b.workspace_label)
-                    .then_with(|| a.tab_number.unwrap_or(1 << 30).cmp(&b.tab_number.unwrap_or(1 << 30)))
-                    .then_with(|| a.title.cmp(&b.title))
+                Bar::place_order(a, b)
             })
         });
-        let mut ordered: Vec<usize> = recent.iter().map(|(_, item)| *item).collect();
-        let recent_count = recent.len();
+        let mut ordered: Vec<usize> = pinned.iter().map(|entry| entry.2).collect();
+        ordered.extend(recent.iter().map(|(_, item)| *item));
+        let ahead = ordered.len();
         ordered.extend(rest);
         if let Some(current) = current {
             // Never first: open-then-Enter should take you somewhere else, the
-            // way alt-tab does. Right after the recents block is close enough
-            // to stay findable.
-            let at = ordered.len().min(recent_count.max(1));
+            // way alt-tab does. Right after the pinned and recent rows is close
+            // enough to stay findable.
+            let at = ordered.len().min(ahead.max(1));
             ordered.insert(at, current);
         }
         ordered
@@ -1864,6 +1891,103 @@ mod tests {
         let mut t = bar();
         t.bar.insert("!", false);
         assert!(t.bar.rows.iter().all(|row| matches!(t.bar.pool[row.item].status.as_str(), "blocked" | "done")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn needs_you_follows_the_attention_setting() {
+        let config = config_of(&[("attention", pyjson::loads(r#"["blocked"]"#).unwrap())]);
+        let mut t = bar_with(testutil::snapshot(), config, Recents::new(None));
+        t.bar.insert("!", false);
+        // Every row is blocked: the two blocked agents, and the space whose
+        // rolled-up status is blocked, as upstream's filter lists it too.
+        assert!(t.bar.rows.iter().all(|row| t.bar.pool[row.item].status == "blocked"));
+        let mut found: Vec<String> =
+            t.bar.rows.iter().map(|row| &t.bar.pool[row.item]).filter(|i| i.kind != KIND_SPACE).map(|i| i.title.clone()).collect();
+        found.sort();
+        assert_eq!(found, vec!["cards meaningless", "retry queue backoff"]);
+    }
+
+    /// Recents with the fixture's done row visited first and its blocked
+    /// "retry queue backoff" visited after it.
+    #[cfg(unix)]
+    fn visited_done_then_blocked() -> Recents {
+        let mut recents = Recents::new(None);
+        recents.touch("w1:p5", "library depth battery");
+        recents.touch("w2:p1", "retry queue backoff");
+        recents
+    }
+
+    // Each `bar_with` holds the environment lock for as long as its `T`
+    // lives, so one test builds its bars one block at a time.
+    #[cfg(unix)]
+    #[test]
+    fn pinned_attention_rows_come_before_the_recents() {
+        {
+            // Default attention, pinned: blocked rows first (the visited one
+            // ahead of the other), then the done row, then the current row.
+            let config = config_of(&[("pin_attention", Value::Bool(true))]);
+            let t = bar_with(testutil::snapshot(), config, visited_done_then_blocked());
+            let top = titles(&t.bar);
+            assert_eq!(&top[..3], ["retry queue backoff", "cards meaningless", "library depth battery"]);
+            assert_eq!(Some(&row_item(&t.bar, 3).key), t.bar.current_key.as_ref());
+        }
+        {
+            // Blocked only: the done row goes back to being a plain recent, and
+            // still sits right after the pinned rows because it was visited.
+            let config = config_of(&[
+                ("pin_attention", Value::Bool(true)),
+                ("attention", pyjson::loads(r#"["blocked"]"#).unwrap()),
+            ]);
+            let t = bar_with(testutil::snapshot(), config, visited_done_then_blocked());
+            let top = titles(&t.bar);
+            assert_eq!(&top[..3], ["retry queue backoff", "cards meaningless", "library depth battery"]);
+            assert_eq!(row_item(&t.bar, 2).status, "done");
+            assert_eq!(Some(&row_item(&t.bar, 3).key), t.bar.current_key.as_ref());
+        }
+        {
+            // Without the pin, upstream's order: the recents first, most recent on top.
+            let t = bar_with(testutil::snapshot(), Config::default(), visited_done_then_blocked());
+            assert_eq!(&titles(&t.bar)[..2], ["retry queue backoff", "library depth battery"]);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_rows_win_query_ties_over_recency() {
+        // Two "lead" tabs match the query equally (same match, same length;
+        // the titles differ so the recents cannot match both by title); the
+        // done one was visited, so recency alone would put it first.
+        let snapshot = pyjson::loads(
+            r#"{"workspaces": [{"workspace_id": "w1", "label": "Alpha"}, {"workspace_id": "w2", "label": "Beta"}],
+                "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "lead a"},
+                         {"tab_id": "w2:t1", "workspace_id": "w2", "label": "lead b"}],
+                "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "cwd": "/wt/alpha"},
+                          {"pane_id": "w2:p1", "tab_id": "w2:t1", "cwd": "/wt/beta"}],
+                "agents": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "agent": "pi", "agent_status": "done"},
+                           {"pane_id": "w2:p1", "tab_id": "w2:t1", "agent": "pi", "agent_status": "blocked"}]}"#,
+        )
+        .unwrap();
+        let visited = || {
+            let mut recents = Recents::new(None);
+            recents.touch("w1:p1", "lead a");
+            recents
+        };
+        {
+            let config = config_of(&[
+                ("pin_attention", Value::Bool(true)),
+                ("attention", pyjson::loads(r#"["blocked"]"#).unwrap()),
+            ]);
+            let mut t = bar_with(snapshot.clone(), config, visited());
+            t.bar.insert("lead", false);
+            assert_eq!(row_item(&t.bar, 0).status, "blocked");
+        }
+        {
+            // Without the pin, recency breaks the tie as before.
+            let mut t = bar_with(snapshot, Config::default(), visited());
+            t.bar.insert("lead", false);
+            assert_eq!(row_item(&t.bar, 0).status, "done");
+        }
     }
 
     #[cfg(unix)]

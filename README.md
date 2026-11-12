@@ -356,7 +356,11 @@ changed a minute ago on a two-hour-old session still says two hours.
 
 **How it is ordered.** With no query: recently visited rows first, then rows that
 want your attention (blocked, then done, then working), then the rest by
-workspace and tab number. The tab you are currently in is never first. With a
+workspace and tab number. The tab you are currently in is never first. Set
+`"pin_attention": true` to put the rows that need you above the recents
+instead, the most urgent status first and the most recently visited within it;
+`"attention"` names which statuses those are (`["blocked", "done"]` unless
+set), for the pin and for the `!` filter alike. With a
 query: best fuzzy score wins, ties broken by recency and then status. Matches in
 the title outrank matches in a working directory or an agent name. Matched
 characters are drawn bold, colored and underlined wherever the row shows the
@@ -401,6 +405,8 @@ Optional. Write `config.json` in the plugin config directory
 | `running_time` | `true` | per-row running time (`47s`, `2h04m`); `false` hides it and skips the per-pane `process_info`/`ps` reading, so the bar opens faster |
 | `scope` | `"all"` | the filter the bar opens with: `"agent"` (`@ agents`), `"pane"` (`% panes`), `"tab"` (`$ shells`), `"blocked"` (`! needs you`), `"action"` (`> actions`, with `"actions": true`) or `"all"`; `backspace` on an empty query still clears it, and `ctrl+u` returns to it |
 | `select_current` | `false` | `true` opens with the row you are in selected instead of the one you came from; the order stays the same, so that row follows the recently visited ones |
+| `attention` | `["blocked", "done"]` | the statuses that need you: what `! needs you` shows and what `pin_attention` pins. Any of `blocked`, `done`, `working`, `idle`; a list naming none of them keeps the default. A fleet whose workers report to their lead rather than to you wants `["blocked"]` |
+| `pin_attention` | `false` | `true` puts the rows that need you above the recently visited ones when the bar opens with no query, blocked first and then by recency, and lets them win a query tie over recency. Space rows are never pinned |
 | `workspace_in_title` | `"never"` | `"auto"` follows a tab name that appears in more than one workspace with its workspace in the row title (`[1] lead · Connect launcher · LUM-2523`); `"always"` does it for every tab and agent row. A title that already names its workspace is left alone, and the right-hand column drops its copy of the label |
 | `actions` | `false` | `true` lists plugin actions as rows that run on Enter; `>` filters to them. The list is read once per open |
 | `colors` | `{}` | role → `#rrggbb`, an ANSI name (`bright_blue`), or 0-255. Roles: `accent`, `match`, `text`, `muted`, `blocked`, `working`, `done`, `idle`, `unknown`, plus `agent_claude`, `agent_codex`, `agent_pi`, `agent_grok`, `agent_kimi`, `agent_gemini`, `agent_cursor`, `agent_opencode` |

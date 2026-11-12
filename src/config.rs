@@ -7,6 +7,12 @@
 
 use crate::app::SCOPES;
 use crate::items::WORKSPACE_IN_TITLE_MODES;
+
+/// The statuses `attention` may name.
+pub const ATTENTION_STATUSES: [&str; 4] = ["blocked", "done", "working", "idle"];
+/// What needs you unless `attention` says otherwise: an agent at a question
+/// or permission prompt, and one that has finished.
+pub const DEFAULT_ATTENTION: [&str; 2] = ["blocked", "done"];
 use crate::pyjson::{self, Map, Value};
 use crate::pystr;
 use std::path::PathBuf;
@@ -38,6 +44,11 @@ pub struct Config {
     /// Follow a tab name with its workspace in the row title: "never",
     /// "auto" (only a name that several workspaces share) or "always".
     pub workspace_in_title: &'static str,
+    /// The statuses that need you: what `! needs you` shows and, with
+    /// `pin_attention`, what sits above the recents.
+    pub attention: Vec<&'static str>,
+    /// Put the rows that need you before the recently visited ones.
+    pub pin_attention: bool,
 }
 
 /// Python's `int(value)` for whatever JSON put there; None where it raises.
@@ -115,6 +126,26 @@ impl Config {
                 .and_then(|v| v.as_str())
                 .and_then(|name| WORKSPACE_IN_TITLE_MODES.iter().copied().find(|mode| *mode == name))
                 .unwrap_or("never"),
+            attention: {
+                // A list of status names; unknown names are dropped, and a
+                // list that names nothing keeps the default.
+                let mut picked: Vec<&'static str> = Vec::new();
+                if let Some(Value::List(items)) = get("attention") {
+                    for name in items.iter().filter_map(|v| v.as_str()) {
+                        if let Some(status) = ATTENTION_STATUSES.iter().copied().find(|s| *s == name) {
+                            if !picked.contains(&status) {
+                                picked.push(status);
+                            }
+                        }
+                    }
+                }
+                if picked.is_empty() {
+                    DEFAULT_ATTENTION.to_vec()
+                } else {
+                    picked
+                }
+            },
+            pin_attention: get("pin_attention").map(|v| v.is_true()).unwrap_or(false),
         }
     }
 
@@ -218,6 +249,26 @@ mod tests {
         }
         for value in ["\"Auto\"", "\"on\"", "\"\"", "true", "1", "null", "[\"auto\"]"] {
             assert_eq!(with("workspace_in_title", value).workspace_in_title, "never", "workspace_in_title = {}", value);
+        }
+    }
+
+    #[test]
+    fn attention_takes_known_statuses_and_keeps_the_default_otherwise() {
+        assert_eq!(Config::default().attention, vec!["blocked", "done"]);
+        assert_eq!(with("attention", r#"["blocked"]"#).attention, vec!["blocked"]);
+        assert_eq!(with("attention", r#"["done", "blocked", "done"]"#).attention, vec!["done", "blocked"]);
+        assert_eq!(with("attention", r#"["working", "stuck", 3, "idle"]"#).attention, vec!["working", "idle"]);
+        for value in ["[]", r#"["Blocked"]"#, r#""blocked""#, "true", "null", "{}"] {
+            assert_eq!(with("attention", value).attention, vec!["blocked", "done"], "attention = {}", value);
+        }
+    }
+
+    #[test]
+    fn pin_attention_takes_only_true() {
+        assert!(!Config::default().pin_attention);
+        assert!(with("pin_attention", "true").pin_attention);
+        for value in ["false", "\"true\"", "1", "null"] {
+            assert!(!with("pin_attention", value).pin_attention, "pin_attention = {}", value);
         }
     }
 
